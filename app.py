@@ -301,13 +301,14 @@ def monitor_data():
                 "rede_temp":       rede["temp"],
                 "rede_temp_label": rede["temp_label"],
                 "hora_criacao":    dt_cri.strftime("%H:%M"),
+                "criacao_iso":     dt_cri.strftime("%Y-%m-%dT%H:%M:%S"),
                 "effective_start": eff_iso,
                 "tme_util_seg":    tme_seg,
                 "tme_util":        fmt_hms(tme_seg),
             })
 
-    # Mais urgente no topo
-    leads_aguardando.sort(key=lambda x: x["tme_util_seg"], reverse=True)
+    # Mais recente no topo (ordem de chegada)
+    leads_aguardando.sort(key=lambda x: x["criacao_iso"], reverse=True)
 
     # ── Tabela de SDRs ─────────────────────────────────────────────
     sdrs_lista = []
@@ -338,6 +339,7 @@ def monitor_data():
             "tme_medio_geral_seg":   med_geral,
         })
 
+    sdrs_lista = [s for s in sdrs_lista if s["leads_hoje"] > 0]
     sdrs_lista.sort(key=lambda x: x["tme_medio_geral_seg"], reverse=True)
 
     # ── Médias por Time ────────────────────────────────────────────
@@ -844,7 +846,7 @@ body {
       <span class="sec-hdr-title">Fila Aguardando 1ª Ligação</span>
       <span class="sec-hdr-badge" id="fila-ct">0 leads</span>
       <div class="sec-line"></div>
-      <span style="font-size:.55rem;color:var(--muted);letter-spacing:1px">▲ mais urgente no topo &nbsp;·&nbsp; horário útil 09h–18h &nbsp;·&nbsp; excl. fins de semana e feriados</span>
+      <span style="font-size:.55rem;color:var(--muted);letter-spacing:1px">▼ mais recente no topo &nbsp;·&nbsp; cores por horário útil 09h–18h &nbsp;·&nbsp; excl. fins de semana e feriados</span>
     </div>
     <div class="fila-scroll" id="fila-wrap">
       <div class="empty"><span class="empty-icon">📡</span><span class="empty-txt">Carregando</span></div>
@@ -919,6 +921,11 @@ function startProgress() {
   }, 1000);
 }
 
+// ── RELÓGIO DE PAREDE — sempre toca, dá pressão visual ───────────
+function calcWallSeconds(isoStr) {
+  return Math.max(0, (Date.now() - new Date(isoStr)) / 1000);
+}
+
 // ── TME ÚTIL (JS) ─────────────────────────────────────────────────
 function calcBizSeconds(effStartIso) {
   const start = new Date(effStartIso);
@@ -972,13 +979,14 @@ function barPct(seg) { return Math.min(100, (seg / 600) * 100); } // 10min = 100
 function tick() {
   if (!appData) return;
 
-  // --- FILA: atualiza TME de cada linha ---
+  // --- FILA: relógio de parede para display (sempre toca),
+  //           horário útil para cor (métrica correta) ---
   document.querySelectorAll('tr[data-eff]').forEach(tr => {
-    const seg  = calcBizSeconds(tr.dataset.eff);
-    const txt  = fmtHMS(seg);
-    const st   = statusOf(seg);
+    const wall = calcWallSeconds(tr.dataset.cri || tr.dataset.eff); // sempre toca
+    const biz  = calcBizSeconds(tr.dataset.eff);                    // para cor
+    const st   = statusOf(biz);
     const tmeEl = tr.querySelector('.td-tme');
-    if (tmeEl) { tmeEl.textContent = txt; tmeEl.className = 'td-tme ' + st + '-val'; }
+    if (tmeEl) { tmeEl.textContent = fmtHMS(wall); tmeEl.className = 'td-tme ' + st + '-val'; }
     tr.className = 'r-' + st;
   });
 
@@ -1077,7 +1085,7 @@ function renderFila(leads) {
     const seg  = calcBizSeconds(l.effective_start);
     const st   = statusOf(seg);
     return `
-      <tr class="r-${st}" data-eff="${l.effective_start}" style="animation-delay:${i*20}ms">
+      <tr class="r-${st}" data-eff="${l.effective_start}" data-cri="${l.criacao_iso || l.effective_start}" style="animation-delay:${i*20}ms">
         <td class="td-sdr">${l.sdr_nome}</td>
         <td class="td-titulo" title="${l.titulo}">${l.titulo}</td>
         <td class="td-funil" title="${l.funil}">${l.funil}</td>
