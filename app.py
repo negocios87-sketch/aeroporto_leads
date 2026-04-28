@@ -374,6 +374,12 @@ def monitor_data():
         "feriados":      [f.strftime("%Y-%m-%d") for f in feriados],
         "hora_ini":      HORA_INI,
         "hora_fim":      HORA_FIM,
+        "funis_do_dia":  sorted(set(
+            pipelines.get(d.get("pipeline_id"), str(d.get("pipeline_id")) or "—")
+            for d in deals
+            if parse_dt(d.get("add_time"), utc=True) and parse_dt(d.get("add_time"), utc=True).date() == hoje
+            and (d.get("user_id") or {}).get("name", "—") in sdrs_map
+        )),
         "atualizado_em": agora.strftime("%d/%m/%Y %H:%M:%S"),
     })
 
@@ -1065,7 +1071,7 @@ async function fetchDados() {
     document.getElementById('k-ta').textContent    = data.kpis.tme_medio_abertos || '—';
     document.getElementById('r-ts').textContent    = data.atualizado_em;
 
-    popularFunis(data.leads_aguardando || []);
+    popularFunis(data.funis_do_dia || []);
     aplicarFiltro();
     startProgress();
   } catch(err) {
@@ -1088,10 +1094,8 @@ selectFunil.addEventListener('change', () => {
   if (appData) aplicarFiltro();
 });
 
-function popularFunis(leads) {
-  const funis = [...new Set(leads.map(l => l.funil).filter(Boolean))].sort();
+function popularFunis(funis) {
   const atual = selectFunil.value;
-  // Mantém opção atual selecionada se ainda existir
   selectFunil.innerHTML = '<option value="">Todos os Funis</option>' +
     funis.map(f => `<option value="${f}" ${f === atual ? 'selected' : ''}>${f}</option>`).join('');
   filtroFunil = selectFunil.value;
