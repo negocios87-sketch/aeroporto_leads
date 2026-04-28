@@ -623,12 +623,12 @@ body {
 .tbl-sdrs { width:100%; border-collapse:separate; border-spacing:0 2px; padding:6px 12px; }
 .tbl-sdrs thead th {
   font-family: var(--mono);
-  font-size: .5rem;
+  font-size: .46rem;
   font-weight: 700;
   color: var(--goldd);
-  letter-spacing: 2px;
+  letter-spacing: 1.5px;
   text-transform: uppercase;
-  padding: 4px 6px 8px;
+  padding: 3px 5px 6px;
   text-align: left;
   white-space: nowrap;
   border-bottom: 1px solid var(--border);
@@ -641,21 +641,21 @@ body {
 .tbl-sdrs tbody tr { background:var(--surface); animation:rowIn .3s ease both; }
 .tbl-sdrs tbody tr:hover { filter:brightness(1.15); }
 .tbl-sdrs tbody td {
-  padding: 8px 6px;
-  font-size: .75rem;
+  padding: 6px 5px;
+  font-size: .7rem;
   color: var(--text);
   border-top: 1px solid #0F1929;
   border-bottom: 1px solid #0F1929;
   white-space: nowrap;
 }
-.tbl-sdrs tbody td:first-child { border-radius:4px 0 0 4px; padding-left:10px; }
+.tbl-sdrs tbody td:first-child { border-radius:4px 0 0 4px; padding-left:8px; }
 .tbl-sdrs tbody td:last-child  { border-radius:0 4px 4px 0; }
 .tbl-sdrs td.tr { text-align:right; }
 
-.sdr-nome { font-weight:700; font-size:.8rem; }
-.sdr-time { font-size:.65rem; color:#94A3B8; display:block; margin-top:1px; }
-.sdr-ct   { font-family:var(--mono); font-weight:700; font-size:.78rem; }
-.tme-mono { font-family:var(--mono); font-size:.78rem; font-weight:700; }
+.sdr-nome { font-weight:700; font-size:.72rem; }
+.sdr-time { font-size:.62rem; color:#94A3B8; display:block; margin-top:1px; }
+.sdr-ct   { font-family:var(--mono); font-weight:700; font-size:.72rem; }
+.tme-mono { font-family:var(--mono); font-size:.72rem; font-weight:700; }
 
 .mini-bar  { width:50px; height:3px; background:#1F2937; border-radius:3px; overflow:hidden; display:inline-block; vertical-align:middle; margin-left:5px; }
 .mini-fill { height:100%; border-radius:3px; transition:width .5s ease; }
@@ -990,7 +990,6 @@ function renderSDRs(sdrs) {
       <tr style="animation-delay:${i*22}ms">
         <td>
           <span class="sdr-nome">${s.nome}</span>
-          <span class="sdr-time">${s.time||'—'}</span>
         </td>
         <td class="tr"><span class="sdr-ct">${s.leads_hoje}</span></td>
         <td class="tr"><span class="sdr-ct">${s.leads_abertos_ct}</span></td>
@@ -999,18 +998,17 @@ function renderSDRs(sdrs) {
         </td>
         <td class="tr">
           <span class="tme-mono ${stAb}-val" id="sab-${eid(s.nome)}">${medAb!=null?hms(medAb):'—'}</span>
-          <span class="mini-bar"><span class="mini-fill" id="bar-${eid(s.nome)}" style="width:${pct}%;background:${barClr(stAb)}"></span></span>
         </td>
       </tr>`;
   }).join('');
   wrap.innerHTML = `
     <table class="tbl-sdrs">
       <thead><tr>
-        <th>SDR / Time</th>
+        <th>SDR</th>
         <th class="tr">Hoje</th>
         <th class="tr">Ab.</th>
         <th class="tr">TME Geral</th>
-        <th class="tr">TME Abertos</th>
+        <th class="tr">TME Ab.</th>
       </tr></thead>
       <tbody>${rows}</tbody>
     </table>`;
