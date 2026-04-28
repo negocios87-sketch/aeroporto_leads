@@ -503,9 +503,30 @@ body {
 /* ══ MAIN — DUAS COLUNAS ══ */
 .main {
   flex: 1;
-  display: grid;
-  grid-template-columns: 1fr 340px;
+  display: flex;
   overflow: hidden;
+}
+
+/* ── RESIZER ── */
+.resizer {
+  flex-shrink: 0;
+  width: 5px;
+  background: var(--border);
+  cursor: col-resize;
+  transition: background .15s;
+  position: relative;
+}
+.resizer:hover, .resizer.dragging { background: var(--gold); }
+.resizer::after {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 1px;
+  height: 24px;
+  background: inherit;
+  border-radius: 2px;
 }
 
 /* ── PAINEL ESQUERDO: FILA ── */
@@ -735,7 +756,7 @@ body {
 <div class="main">
 
   <!-- ESQUERDA: FILA -->
-  <div class="panel-fila">
+  <div class="panel-fila" id="panel-fila" style="flex:1;min-width:200px">
     <div class="sec-hdr">
       <span class="sec-title">Fila Aguardando 1ª Ligação</span>
       <span class="sec-badge" id="fila-ct">—</span>
@@ -746,8 +767,11 @@ body {
     </div>
   </div>
 
+  <!-- RESIZER -->
+  <div class="resizer" id="resizer"></div>
+
   <!-- DIREITA: SDRs -->
-  <div class="panel-sdrs">
+  <div class="panel-sdrs" id="panel-sdrs" style="width:340px;min-width:160px;flex-shrink:0">
     <div class="sec-hdr">
       <span class="sec-title">Por SDR</span>
       <div class="sec-line"></div>
@@ -1042,6 +1066,38 @@ async function fetchDados() {
       '<div class="empty"><span class="empty-icon">⚠️</span><span class="empty-txt">Erro de conexão</span></div>';
   }
 }
+
+// ── RESIZER ─────────────────────────────────────────────────────────
+(function() {
+  const resizer   = document.getElementById('resizer');
+  const panelSDR  = document.getElementById('panel-sdrs');
+  const main      = resizer.parentElement;
+  let dragging    = false, startX = 0, startW = 0;
+
+  resizer.addEventListener('mousedown', e => {
+    dragging = true;
+    startX   = e.clientX;
+    startW   = panelSDR.offsetWidth;
+    resizer.classList.add('dragging');
+    document.body.style.cursor    = 'col-resize';
+    document.body.style.userSelect = 'none';
+  });
+
+  document.addEventListener('mousemove', e => {
+    if (!dragging) return;
+    const delta  = startX - e.clientX;          // arrasta pra esquerda = aumenta SDR
+    const newW   = Math.min(Math.max(startW + delta, 160), main.offsetWidth - 200);
+    panelSDR.style.width = newW + 'px';
+  });
+
+  document.addEventListener('mouseup', () => {
+    if (!dragging) return;
+    dragging = false;
+    resizer.classList.remove('dragging');
+    document.body.style.cursor     = '';
+    document.body.style.userSelect = '';
+  });
+})();
 
 fetchDados();
 setInterval(fetchDados, REFRESH * 1000);
