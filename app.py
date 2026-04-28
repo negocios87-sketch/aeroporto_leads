@@ -744,6 +744,15 @@ body {
         <span class="refresh-ts" id="r-ts">—</span>
         <div class="pbar"><div class="pfill" id="pfill" style="width:0%"></div></div>
       </div>
+      <select id="filtro-funil" style="
+        background:#111827; color:#F1F5F9;
+        border:1px solid #1F2D45; border-radius:6px;
+        padding:5px 10px; font-family:'DM Sans',sans-serif;
+        font-size:.72rem; cursor:pointer; outline:none;
+        min-width:140px;
+      ">
+        <option value="">Todos os Funis</option>
+      </select>
     </div>
   </div>
   <!-- CHIPS DE TIME -->
@@ -1056,9 +1065,8 @@ async function fetchDados() {
     document.getElementById('k-ta').textContent    = data.kpis.tme_medio_abertos || '—';
     document.getElementById('r-ts').textContent    = data.atualizado_em;
 
-    renderTimes(data.times || []);
-    renderFila(data.leads_aguardando || []);
-    renderSDRs(data.sdrs || []);
+    popularFunis(data.leads_aguardando || []);
+    aplicarFiltro();
     startProgress();
   } catch(err) {
     console.error('Erro:', err);
@@ -1067,7 +1075,77 @@ async function fetchDados() {
   }
 }
 
-// ── RESIZER ─────────────────────────────────────────────────────────
+// ── FILTRO DE FUNIL ─────────────────────────────────────────────────
+const FILTRO_KEY = 'board_filtro_funil';
+let filtroFunil  = localStorage.getItem(FILTRO_KEY) || '';
+
+const selectFunil = document.getElementById('filtro-funil');
+selectFunil.value = filtroFunil;
+
+selectFunil.addEventListener('change', () => {
+  filtroFunil = selectFunil.value;
+  localStorage.setItem(FILTRO_KEY, filtroFunil);
+  if (appData) aplicarFiltro();
+});
+
+function popularFunis(leads) {
+  const funis = [...new Set(leads.map(l => l.funil).filter(Boolean))].sort();
+  const atual = selectFunil.value;
+  // Mantém opção atual selecionada se ainda existir
+  selectFunil.innerHTML = '<option value="">Todos os Funis</option>' +
+    funis.map(f => `<option value="${f}" ${f === atual ? 'selected' : ''}>${f}</option>`).join('');
+  filtroFunil = selectFunil.value;
+}
+
+function filtrarLeads(leads) {
+  if (!filtroFunil) return leads;
+  return leads.filter(l => l.funil === filtroFunil);
+}
+
+function filtrarSDRs(sdrs, leadsAtivos) {
+  if (!filtroFunil) return sdrs;
+  // Nomes de SDRs que têm pelo menos 1 lead no funil filtrado
+  const nomesAtivos = new Set(leadsAtivos.map(l => l.sdr_nome));
+  // Filtra e recalcula contagens com base nos leads filtrados
+  return sdrs.map(s => {
+    if (!nomesAtivos.has(s.nome)) return null;
+    const leadsDoSDR = leadsAtivos.filter(l => l.sdr_nome === s.nome);
+    const abertos    = leadsDoSDR.length;
+    return { ...s, leads_abertos_ct: abertos, leads_abertos_iso: leadsDoSDR.map(l => l.effective_start) };
+  }).filter(Boolean);
+}
+
+function filtrarTimes(times, leadsAtivos) {
+  if (!filtroFunil) return times;
+  const timesFiltrados = [...new Set(leadsAtivos.map(l => l.sdr_time).filter(Boolean))];
+  return times.map(t => {
+    if (!timesFiltrados.includes(t.nome)) return null;
+    const leadsDoTime = leadsAtivos.filter(l => l.sdr_time === t.nome);
+    return { ...t, leads_abertos: leadsDoTime.length, leads_ab_isos: leadsDoTime.map(l => l.effective_start) };
+  }).filter(Boolean);
+}
+
+function aplicarFiltro() {
+  const todosLeads = appData.leads_aguardando || [];
+  const leadsFilt  = filtrarLeads(todosLeads);
+  const sdrsFilt   = filtrarSDRs(appData.sdrs || [], leadsFilt);
+  const timesFilt  = filtrarTimes(appData.times || [], leadsFilt);
+
+  // Atualiza KPIs
+  const totalFilt = filtroFunil
+    ? (appData.sdrs || []).reduce((acc, s) => {
+        const ct = (appData.leads_aguardando||[]).filter(l => l.sdr_nome===s.nome && l.funil===filtroFunil).length
+                 + s.leads_fechados_ct; // aproximação
+        return acc;
+      }, 0)
+    : appData.kpis.total;
+
+  document.getElementById('k-ag').textContent = leadsFilt.length;
+
+  renderTimes(timesFilt);
+  renderFila(leadsFilt);
+  renderSDRs(sdrsFilt);
+}
 (function() {
   const resizer   = document.getElementById('resizer');
   const panelSDR  = document.getElementById('panel-sdrs');
