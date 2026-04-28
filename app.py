@@ -137,7 +137,16 @@ def buscar_atividades():
         params = {"filter_id": FILTER_ACTIVITIES, "limit": 200}
         if cursor:
             params["cursor"] = cursor
-        r = requests.get(url, params=params, headers=headers, timeout=30)
+        # retry até 3x em caso de erro 5xx do Pipedrive
+        for tentativa in range(3):
+            try:
+                r = requests.get(url, params=params, headers=headers, timeout=30)
+                if r.status_code < 500:
+                    break
+            except requests.exceptions.RequestException:
+                pass
+            if tentativa < 2:
+                import time; time.sleep(2)
         r.raise_for_status()
         data = r.json()
         ativs.extend(data.get("data") or [])
