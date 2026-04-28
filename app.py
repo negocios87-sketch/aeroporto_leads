@@ -24,6 +24,7 @@ API_TOKEN         = os.environ.get("PIPEDRIVE_TOKEN", "SEU_TOKEN_AQUI")
 FILTER_DEALS      = 1258153
 FILTER_ACTIVITIES = 1258382
 UTM_FIELD         = "8fb3221ab3d91cddaf51e0a9e1bbcda34fc9d28e"
+ULTIMA_APLIC_FIELD = "23de049432e523993f69ecd456a3f755c0f07f3d"
 HORA_INI          = 9
 HORA_FIM          = 18
 
@@ -256,7 +257,35 @@ def monitor_data():
         pipeline_id = d.get("pipeline_id")
         funil       = pipelines.get(pipeline_id, str(pipeline_id) if pipeline_id else "—")
         rede        = resolver_rede(d.get(UTM_FIELD, ""))
-        eff         = effective_start(dt_cri, feriados)
+
+        # ── Data de última aplicação (eixo temporal) ──
+        ultima_aplic_raw = d.get(ULTIMA_APLIC_FIELD, "")
+        dt_ref = None
+        if ultima_aplic_raw:
+            try:
+                dt_ref = datetime.strptime(str(ultima_aplic_raw).strip(), "%d/%m/%Y %H:%M:%S")
+            except ValueError:
+                try:
+                    dt_ref = datetime.strptime(str(ultima_aplic_raw).strip(), "%d/%m/%Y %H:%M")
+                except ValueError:
+                    pass
+
+        # Fallback para add_time se campo vazio
+        if dt_ref is None:
+            dt_ref = dt_cri
+
+        # Filtra pelo dia de hoje usando dt_ref
+        if dt_ref.date() != hoje:
+            continue
+
+        # Flag: Novo ou Reaplicado
+        # Compara só a data (ignora hora) para evitar falsos reaplicados por segundos
+        if dt_cri.date() == dt_ref.date():
+            flag = "novo"
+        else:
+            flag = "reaplicado"
+
+        eff         = effective_start(dt_ref, feriados)
         primeira    = mapa_ativ.get(deal_id)
         tem_lig     = primeira is not None
 
@@ -282,11 +311,12 @@ def monitor_data():
                 "rede_label":      rede["label"],
                 "rede_icon":       rede["icon"],
                 "rede_color":      rede["color"],
-                "hora_criacao":    dt_cri.strftime("%H:%M"),
-                "criacao_iso":     dt_cri.strftime("%Y-%m-%dT%H:%M:%S"),
+                "hora_criacao":    dt_ref.strftime("%H:%M"),
+                "criacao_iso":     dt_ref.strftime("%Y-%m-%dT%H:%M:%S"),
                 "effective_start": eff_iso,
                 "tme_util_seg":    tme_seg,
                 "tme_util":        fmt_hms(tme_seg),
+                "flag":            flag,
             })
 
     # Mais recente no topo
@@ -987,6 +1017,9 @@ function renderFila(leads) {
   const rows = leads.map((l,i) => {
     const biz = bizSeconds(l.effective_start);
     const st  = statusOf(biz);
+    const flagBadge = l.flag === 'reaplicado'
+      ? `<span style="background:rgba(251,191,36,.15);border:1px solid rgba(251,191,36,.4);color:#FBBF24;border-radius:4px;padding:1px 7px;font-size:.6rem;font-weight:700">↩ REAPLIC.</span>`
+      : `<span style="background:rgba(52,211,153,.1);border:1px solid rgba(52,211,153,.3);color:#34D399;border-radius:4px;padding:1px 7px;font-size:.6rem;font-weight:700">✦ NOVO</span>`;
     return `
       <tr class="r-${st}" data-cri="${l.criacao_iso}" data-eff="${l.effective_start}" style="animation-delay:${i*18}ms">
         <td class="td-id">#${l.deal_id}</td>
@@ -995,6 +1028,7 @@ function renderFila(leads) {
         <td class="td-lead" title="${l.titulo}">${l.titulo}</td>
         <td class="td-funil" title="${l.funil}">${l.funil}</td>
         <td><i class="rede-icon ${l.rede_icon}" style="color:${l.rede_color}" title="${l.rede_label}"></i></td>
+        <td>${flagBadge}</td>
         <td class="td-hora">${l.hora_criacao}</td>
         <td><span class="td-tme ${st}-val">${hms(wallSeconds(l.criacao_iso))}</span></td>
       </tr>`;
@@ -1003,7 +1037,7 @@ function renderFila(leads) {
     <table class="tbl">
       <thead><tr>
         <th>ID</th><th>SDR</th><th>Time</th><th>Lead</th>
-        <th>Funil</th><th>Rede</th><th>Chegada</th><th>TME ⏱</th>
+        <th>Funil</th><th>Rede</th><th>Status</th><th>Chegada</th><th>TME ⏱</th>
       </tr></thead>
       <tbody>${rows}</tbody>
     </table>`;
