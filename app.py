@@ -38,6 +38,11 @@ SHEET_FERIADOS = (
     "2PACX-1vSvwO3Ag2f2cbkVgR1pJZp6fANQcbualGKlAG50fmOljuEGKZ1gJBbSAjRdO3SomXUEVQOWnTvlfHRd"
     "/pub?gid=1010928978&single=true&output=csv"
 )
+SHEET_ESCALA = (
+    "https://docs.google.com/spreadsheets/d/e/"
+    "2PACX-1vSvwO3Ag2f2cbkVgR1pJZp6fANQcbualGKlAG50fmOljuEGKZ1gJBbSAjRdO3SomXUEVQOWnTvlfHRd"
+    "/pub?gid=25744635&single=true&output=csv"
+)
 
 app = Flask(__name__)
 
@@ -90,6 +95,48 @@ def _fetch_feriados():
 
 def get_sdrs():     return cached("sdrs",     _fetch_sdrs,     1800)
 def get_feriados(): return cached("feriados", _fetch_feriados, 86400)
+
+def _fetch_escala() -> dict:
+    """Retorna {nome: {hora_ini: float, hora_fim: float}} via colunas E (Entrada) e F (Saida)."""
+    r = requests.get(SHEET_ESCALA, timeout=15)
+    r.raise_for_status()
+    r.encoding = "utf-8"
+    escala = {}
+
+    def parse_hora(val):
+        val = str(val).strip()
+        if not val:
+            return None
+        if ":" in val:
+            parts = val.split(":")
+            try:
+                return int(parts[0]) + int(parts[1]) / 60
+            except (ValueError, IndexError):
+                return None
+        try:
+            f = float(val.replace(",", "."))
+            # Excel serializa hora como fração de 1 dia
+            if 0 < f < 1:
+                return round(f * 24, 4)
+            return f
+        except ValueError:
+            return None
+
+    for row in csv.reader(io.StringIO(r.text)):
+        if len(row) < 6:
+            continue
+        nome    = row[0].strip()
+        entrada = row[4].strip()  # col E
+        saida   = row[5].strip()  # col F
+        if not nome or nome.lower() in ("nome", "name"):
+            continue
+        h_ini = parse_hora(entrada)
+        h_fim = parse_hora(saida)
+        if h_ini is not None and h_fim is not None:
+            escala[nome] = {"hora_ini": h_ini, "hora_fim": h_fim}
+    return escala
+
+def get_escala() -> dict: return cached("escala", _fetch_escala, 1800)
 
 # ── REDES ────────────────────────────────────────────────────────────
 REDES = {
@@ -177,20 +224,24 @@ def fmt_hms(seg):
 
 # ── TME ÚTIL ─────────────────────────────────────────────────────────
 
-def effective_start(dt, feriados):
-    d = dt.date()
-    h = dt.hour + dt.minute / 60
+def effective_start(dt, feriados, hora_ini=None, hora_fim=None):
+    hi = hora_ini if hora_ini is not None else HORA_INI
+    hf = hora_fim if hora_fim is not None else HORA_FIM
+    d  = dt.date()
+    h  = dt.hour + dt.minute / 60
     is_biz = dt.weekday() < 5 and d not in feriados
-    if is_biz and HORA_INI <= h < HORA_FIM:
+    if is_biz and hi <= h < hf:
         return dt
-    if is_biz and h < HORA_INI:
-        return datetime(d.year, d.month, d.day, HORA_INI, 0, 0)
+    if is_biz and h < hi:
+        return datetime(d.year, d.month, d.day, int(hi), int((hi % 1) * 60), 0)
     candidate = d + timedelta(days=1)
     while candidate.weekday() >= 5 or candidate in feriados:
         candidate += timedelta(days=1)
-    return datetime(candidate.year, candidate.month, candidate.day, HORA_INI, 0, 0)
+    return datetime(candidate.year, candidate.month, candidate.day, int(hi), int((hi % 1) * 60), 0)
 
-def calc_biz_seconds(inicio, fim, feriados):
+def calc_biz_seconds(inicio, fim, feriados, hora_ini=None, hora_fim=None):
+    hi = hora_ini if hora_ini is not None else HORA_INI
+    hf = hora_fim if hora_fim is not None else HORA_FIM
     if fim <= inicio:
         return 0.0
     total, current, guard = 0.0, inicio, 0
@@ -199,17 +250,17 @@ def calc_biz_seconds(inicio, fim, feriados):
         d = current.date()
         if current.weekday() >= 5 or d in feriados:
             nxt = d + timedelta(days=1)
-            current = datetime(nxt.year, nxt.month, nxt.day, HORA_INI, 0, 0)
+            current = datetime(nxt.year, nxt.month, nxt.day, int(hi), int((hi % 1) * 60), 0)
             continue
-        day_s = datetime(d.year, d.month, d.day, HORA_INI, 0, 0)
-        day_e = datetime(d.year, d.month, d.day, HORA_FIM, 0, 0)
+        day_s = datetime(d.year, d.month, d.day, int(hi), int((hi % 1) * 60), 0)
+        day_e = datetime(d.year, d.month, d.day, int(hf), int((hf % 1) * 60), 0)
         seg_s, seg_e = max(current, day_s), min(fim, day_e)
         if seg_e > seg_s:
             total += (seg_e - seg_s).total_seconds()
         if fim <= day_e:
             break
         nxt = d + timedelta(days=1)
-        current = datetime(nxt.year, nxt.month, nxt.day, HORA_INI, 0, 0)
+        current = datetime(nxt.year, nxt.month, nxt.day, int(hi), int((hi % 1) * 60), 0)
     return total
 
 # ── ENDPOINT ─────────────────────────────────────────────────────────
@@ -220,6 +271,7 @@ def monitor_data():
     hoje     = agora.date()
     sdrs_map = get_sdrs()
     feriados = get_feriados()
+    escala   = get_escala()
 
     pipelines  = buscar_pipelines()
     deals      = buscar_deals()
@@ -267,6 +319,11 @@ def monitor_data():
         funil       = pipelines.get(pipeline_id, str(pipeline_id) if pipeline_id else "—")
         rede        = resolver_rede(d.get(UTM_FIELD, ""))
 
+        # Escala individual do SDR (fallback para padrão se não tiver)
+        sdr_escala = escala.get(owner_name, {})
+        hi = sdr_escala.get("hora_ini", HORA_INI)
+        hf = sdr_escala.get("hora_fim", HORA_FIM)
+
         # ── Data de última aplicação (eixo temporal) ──
         ultima_aplic_raw = d.get(ULTIMA_APLIC_FIELD, "")
         dt_ref = None
@@ -294,21 +351,22 @@ def monitor_data():
         else:
             flag = "reaplicado"
 
-        eff         = effective_start(dt_ref, feriados)
+        eff         = effective_start(dt_ref, feriados, hi, hf)
         primeira    = mapa_ativ.get(deal_id)
         tem_lig     = primeira is not None
 
         acc = sdr_acc.setdefault(owner_name, {
             "time": sdrs_map.get(owner_name, {}).get("time", "—"),
-            "leads_fechados_tme": [], "leads_abertos_iso": [], "total": 0
+            "leads_fechados_tme": [], "leads_abertos_iso": [], "total": 0,
+            "hora_ini": hi, "hora_fim": hf,
         })
         acc["total"] += 1
 
         if tem_lig:
-            tme_seg = calc_biz_seconds(eff, primeira, feriados)
+            tme_seg = calc_biz_seconds(eff, primeira, feriados, hi, hf)
             acc["leads_fechados_tme"].append(tme_seg)
         else:
-            tme_seg = calc_biz_seconds(eff, agora, feriados)
+            tme_seg = calc_biz_seconds(eff, agora, feriados, hi, hf)
             eff_iso = eff.strftime("%Y-%m-%dT%H:%M:%S")
             acc["leads_abertos_iso"].append(eff_iso)
             leads_aguardando.append({
@@ -336,7 +394,9 @@ def monitor_data():
     for nome, acc in sdr_acc.items():
         if not sdrs_map.get(nome) or acc["total"] == 0:
             continue
-        ab_segs  = [calc_biz_seconds(datetime.strptime(iso, "%Y-%m-%dT%H:%M:%S"), agora, feriados)
+        hi = acc.get("hora_ini", HORA_INI)
+        hf = acc.get("hora_fim", HORA_FIM)
+        ab_segs  = [calc_biz_seconds(datetime.strptime(iso, "%Y-%m-%dT%H:%M:%S"), agora, feriados, hi, hf)
                     for iso in acc["leads_abertos_iso"]]
         all_tmes = acc["leads_fechados_tme"] + ab_segs
         med_g    = sum(all_tmes) / len(all_tmes) if all_tmes else 0
@@ -350,6 +410,8 @@ def monitor_data():
             "leads_fechados_ct":      len(acc["leads_fechados_tme"]),
             "tme_medio_geral":        fmt_hms(med_g),
             "tme_medio_geral_seg":    med_g,
+            "hora_ini":               hi,
+            "hora_fim":               hf,
         })
     sdrs_lista.sort(key=lambda x: x["tme_medio_geral_seg"], reverse=True)
 
@@ -853,6 +915,7 @@ body {
 let appData     = null;
 let feriadosSet = new Set();
 let HORA_INI    = 9, HORA_FIM = 18;
+let escalaMapa  = {}; // {nome: {hi, hf}}
 const REFRESH   = 60;
 let elapsed = 0, progressTimer = null;
 
@@ -882,7 +945,9 @@ function wallSeconds(iso) {
 }
 
 // ── TME ÚTIL (cor e médias) ──────────────────────────────────────────
-function bizSeconds(effIso) {
+function bizSeconds(effIso, horaIni, horaFim) {
+  const hi  = (horaIni !== undefined && horaIni !== null) ? horaIni : HORA_INI;
+  const hf  = (horaFim !== undefined && horaFim !== null) ? horaFim : HORA_FIM;
   const start = new Date(effIso), now = new Date();
   if (now <= start) return 0;
   let total = 0, cur = new Date(start), guard = 0;
@@ -890,16 +955,18 @@ function bizSeconds(effIso) {
     const ds  = cur.toISOString().slice(0,10);
     const dow = cur.getDay();
     if (dow === 0 || dow === 6 || feriadosSet.has(ds)) {
-      cur = new Date(cur); cur.setDate(cur.getDate()+1); cur.setHours(HORA_INI,0,0,0);
+      cur = new Date(cur); cur.setDate(cur.getDate()+1);
+      cur.setHours(Math.floor(hi), Math.round((hi%1)*60), 0, 0);
       continue;
     }
-    const dS = new Date(cur); dS.setHours(HORA_INI,0,0,0);
-    const dE = new Date(cur); dE.setHours(HORA_FIM,0,0,0);
+    const dS = new Date(cur); dS.setHours(Math.floor(hi), Math.round((hi%1)*60), 0, 0);
+    const dE = new Date(cur); dE.setHours(Math.floor(hf), Math.round((hf%1)*60), 0, 0);
     const sS = cur > dS ? cur : dS;
     const sE = now < dE ? now : dE;
     if (sE > sS) total += (sE - sS) / 1000;
     if (now <= dE) break;
-    cur = new Date(cur); cur.setDate(cur.getDate()+1); cur.setHours(HORA_INI,0,0,0);
+    cur = new Date(cur); cur.setDate(cur.getDate()+1);
+    cur.setHours(Math.floor(hi), Math.round((hi%1)*60), 0, 0);
   }
   return Math.max(0, total);
 }
@@ -919,7 +986,8 @@ function tick() {
   // Fila: parede para display, útil para cor
   document.querySelectorAll('tr[data-cri]').forEach(tr => {
     const wall = wallSeconds(tr.dataset.cri);
-    const biz  = bizSeconds(tr.dataset.eff);
+    const esc  = escalaMapa[tr.dataset.sdr] || {};
+    const biz  = bizSeconds(tr.dataset.eff, esc.hi, esc.hf);
     const st   = statusOf(biz);
     const el   = tr.querySelector('.td-tme');
     if (el) { el.textContent = hms(wall); el.className = 'td-tme ' + st + '-val'; }
@@ -928,7 +996,9 @@ function tick() {
 
   // SDRs: TME abertos ao vivo
   (appData.sdrs || []).forEach(s => {
-    const abSegs = (s.leads_abertos_iso || []).map(bizSeconds);
+    const hi     = s.hora_ini || HORA_INI;
+    const hf     = s.hora_fim || HORA_FIM;
+    const abSegs = (s.leads_abertos_iso || []).map(iso => bizSeconds(iso, hi, hf));
     const medAb  = abSegs.length ? abSegs.reduce((a,b)=>a+b,0)/abSegs.length : null;
 
     const abEl = document.getElementById('sab-' + eid(s.nome));
@@ -1024,13 +1094,14 @@ function renderFila(leads) {
     return;
   }
   const rows = leads.map((l,i) => {
-    const biz = bizSeconds(l.effective_start);
+    const esc = escalaMapa[l.sdr_nome] || {};
+    const biz = bizSeconds(l.effective_start, esc.hi, esc.hf);
     const st  = statusOf(biz);
     const flagBadge = l.flag === 'reaplicado'
       ? `<span style="background:rgba(251,191,36,.15);border:1px solid rgba(251,191,36,.4);color:#FBBF24;border-radius:4px;padding:1px 7px;font-size:.6rem;font-weight:700">↩ REAPLIC.</span>`
       : `<span style="background:rgba(52,211,153,.1);border:1px solid rgba(52,211,153,.3);color:#34D399;border-radius:4px;padding:1px 7px;font-size:.6rem;font-weight:700">✦ NOVO</span>`;
     return `
-      <tr class="r-${st}" data-cri="${l.criacao_iso}" data-eff="${l.effective_start}" style="animation-delay:${i*18}ms">
+      <tr class="r-${st}" data-cri="${l.criacao_iso}" data-eff="${l.effective_start}" data-sdr="${l.sdr_nome}" style="animation-delay:${i*18}ms">
         <td class="td-id">#${l.deal_id}</td>
         <td class="td-sdr">${l.sdr_nome}</td>
         <td class="td-time">${l.sdr_time}</td>
@@ -1060,7 +1131,9 @@ function renderSDRs(sdrs) {
     return;
   }
   const rows = sdrs.map((s,i) => {
-    const abSegs = (s.leads_abertos_iso||[]).map(bizSeconds);
+    const hi     = s.hora_ini || HORA_INI;
+    const hf     = s.hora_fim || HORA_FIM;
+    const abSegs = (s.leads_abertos_iso||[]).map(iso => bizSeconds(iso, hi, hf));
     const medAb  = abSegs.length ? abSegs.reduce((a,b)=>a+b,0)/abSegs.length : null;
     const abSum  = abSegs.reduce((a,b)=>a+b,0);
     const ct     = (s.leads_fechados_ct||0) + abSegs.length;
@@ -1106,6 +1179,11 @@ async function fetchDados() {
     feriadosSet = new Set(data.feriados || []);
     HORA_INI    = data.hora_ini || 9;
     HORA_FIM    = data.hora_fim || 18;
+    // monta mapa de escala por SDR
+    escalaMapa  = {};
+    (data.sdrs || []).forEach(s => {
+      escalaMapa[s.nome] = { hi: s.hora_ini || HORA_INI, hf: s.hora_fim || HORA_FIM };
+    });
 
     document.getElementById('k-total').textContent = data.kpis.total;
     document.getElementById('k-at').textContent    = data.kpis.atendidos;
