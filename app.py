@@ -910,7 +910,7 @@ body {
 
 <!-- ══ FOOTER ══ -->
 <footer class="footer">
-  <span>BOARD ACADEMY &nbsp;·&nbsp; Monitor TME &nbsp;·&nbsp; Atualização a cada 60s</span>
+  <span>BOARD ACADEMY &nbsp;·&nbsp; Monitor TME &nbsp;·&nbsp; Atualização a cada 2min &nbsp;·&nbsp; 08h–20h</span>
   <span>
     <span style="color:var(--ok)">■</span> até 5min &nbsp;
     <span style="color:var(--warn)">■</span> 5–10min &nbsp;
@@ -925,7 +925,7 @@ let appData     = null;
 let feriadosSet = new Set();
 let HORA_INI    = 9, HORA_FIM = 18;
 let escalaMapa  = {}; // {nome: {hi, hf}}
-const REFRESH   = 60;
+const REFRESH   = 120;
 let elapsed = 0, progressTimer = null;
 
 // ── RELÓGIO ─────────────────────────────────────────────────────────
@@ -1178,8 +1178,19 @@ function renderSDRs(sdrs) {
     </table>`;
 }
 
+// ── HORÁRIO COMERCIAL — só atualiza das 08h às 20h ──────────────────
+function dentroDoHorario() {
+  const h = new Date().getHours();
+  return h >= 8 && h < 20;
+}
+
 // ── FETCH ────────────────────────────────────────────────────────────
 async function fetchDados() {
+  if (!dentroDoHorario()) {
+    document.getElementById('r-ts').textContent = 'Fora do horário';
+    document.getElementById('pfill').style.width = '0%';
+    return;
+  }
   try {
     const r = await fetch('/api/monitor');
     if (!r.ok) throw new Error('HTTP ' + r.status);
