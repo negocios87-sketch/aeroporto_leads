@@ -24,6 +24,7 @@ API_TOKEN         = os.environ.get("PIPEDRIVE_TOKEN", "SEU_TOKEN_AQUI")
 FILTER_DEALS      = 1258153
 FILTER_ACTIVITIES = 1258382
 UTM_FIELD         = "8fb3221ab3d91cddaf51e0a9e1bbcda34fc9d28e"
+UTM_CAMPAIGN_FIELD = "ae03fa460a108b8cdfa87e97ebca24379d2779d6"
 ULTIMA_APLIC_FIELD = "23de049432e523993f69ecd456a3f755c0f07f3d"
 HORA_INI          = 9
 HORA_FIM          = 18
@@ -318,6 +319,8 @@ def monitor_data():
         pipeline_id = d.get("pipeline_id")
         funil       = pipelines.get(pipeline_id, str(pipeline_id) if pipeline_id else "—")
         rede        = resolver_rede(d.get(UTM_FIELD, ""))
+        utm_campaign = str(d.get(UTM_CAMPAIGN_FIELD, "") or "").upper()
+        is_workshop  = "WORKSHOP" in utm_campaign
 
         # Escala individual do SDR (fallback para padrão se não tiver)
         sdr_escala = escala.get(owner_name, {})
@@ -384,6 +387,7 @@ def monitor_data():
                 "tme_util_seg":    tme_seg,
                 "tme_util":        fmt_hms(tme_seg),
                 "flag":            flag,
+                "workshop":        is_workshop,
             })
 
     # Mais recente no topo
@@ -718,7 +722,12 @@ body {
   z-index: 10;
 }
 .tbl tbody tr { background:var(--surface); animation:rowIn .3s ease both; }
-.tbl tbody tr.r-ok   { background:var(--ok-bg);   border-left:2px solid var(--ok); }
+.tbl tbody tr.r-workshop {
+  background: rgba(168,85,247,.08);
+  border-left: 2px solid #A855F7 !important;
+  box-shadow: inset 3px 0 8px rgba(168,85,247,.15);
+}
+.tbl tbody tr.r-workshop .td-tme { text-shadow: 0 0 8px currentColor; }
 .tbl tbody tr.r-warn { background:var(--warn-bg); border-left:2px solid var(--warn); }
 .tbl tbody tr.r-crit { background:var(--crit-bg); border-left:2px solid var(--crit); }
 .tbl tbody tr:hover  { filter: brightness(1.15); }
@@ -991,7 +1000,8 @@ function tick() {
     const st   = statusOf(biz);
     const el   = tr.querySelector('.td-tme');
     if (el) { el.textContent = hms(wall); el.className = 'td-tme ' + st + '-val'; }
-    tr.className = 'r-' + st;
+    const isWs = tr.classList.contains('r-workshop');
+    tr.className = 'r-' + st + (isWs ? ' r-workshop' : '');
   });
 
   // SDRs: TME abertos ao vivo
@@ -1095,17 +1105,16 @@ function renderFila(leads) {
   }
   const rows = leads.map((l,i) => {
     const esc = escalaMapa[l.sdr_nome] || {};
-    const biz = bizSeconds(l.effective_start, esc.hi, esc.hf);
-    const st  = statusOf(biz);
+    const cls = l.workshop ? `r-${st} r-workshop` : `r-${st}`;
     const flagBadge = l.flag === 'reaplicado'
       ? `<span style="background:rgba(251,191,36,.15);border:1px solid rgba(251,191,36,.4);color:#FBBF24;border-radius:4px;padding:1px 7px;font-size:.6rem;font-weight:700">↩ REAPLIC.</span>`
       : `<span style="background:rgba(52,211,153,.1);border:1px solid rgba(52,211,153,.3);color:#34D399;border-radius:4px;padding:1px 7px;font-size:.6rem;font-weight:700">✦ NOVO</span>`;
     return `
-      <tr class="r-${st}" data-cri="${l.criacao_iso}" data-eff="${l.effective_start}" data-sdr="${l.sdr_nome}" style="animation-delay:${i*18}ms">
+      <tr class="${l.workshop ? `r-${st} r-workshop` : `r-${st}`}" data-cri="${l.criacao_iso}" data-eff="${l.effective_start}" data-sdr="${l.sdr_nome}" style="animation-delay:${i*18}ms">
         <td class="td-id">#${l.deal_id}</td>
         <td class="td-sdr">${l.sdr_nome}</td>
         <td class="td-time">${l.sdr_time}</td>
-        <td class="td-lead" title="${l.titulo}">${l.titulo}</td>
+        <td class="td-lead" title="${l.titulo}">${l.workshop ? '⚡ ' : ''}${l.titulo}</td>
         <td class="td-funil" title="${l.funil}">${l.funil}</td>
         <td><i class="rede-icon ${l.rede_icon}" style="color:${l.rede_color}" title="${l.rede_label}"></i></td>
         <td>${flagBadge}</td>
