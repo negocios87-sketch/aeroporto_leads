@@ -1105,12 +1105,14 @@ function renderFila(leads) {
   }
   const rows = leads.map((l,i) => {
     const esc = escalaMapa[l.sdr_nome] || {};
+    const biz = bizSeconds(l.effective_start, esc.hi, esc.hf);
+    const st  = statusOf(biz);
     const cls = l.workshop ? `r-${st} r-workshop` : `r-${st}`;
     const flagBadge = l.flag === 'reaplicado'
       ? `<span style="background:rgba(251,191,36,.15);border:1px solid rgba(251,191,36,.4);color:#FBBF24;border-radius:4px;padding:1px 7px;font-size:.6rem;font-weight:700">↩ REAPLIC.</span>`
       : `<span style="background:rgba(52,211,153,.1);border:1px solid rgba(52,211,153,.3);color:#34D399;border-radius:4px;padding:1px 7px;font-size:.6rem;font-weight:700">✦ NOVO</span>`;
     return `
-      <tr class="${l.workshop ? `r-${st} r-workshop` : `r-${st}`}" data-cri="${l.criacao_iso}" data-eff="${l.effective_start}" data-sdr="${l.sdr_nome}" style="animation-delay:${i*18}ms">
+      <tr class="${cls}" data-cri="${l.criacao_iso}" data-eff="${l.effective_start}" data-sdr="${l.sdr_nome}" style="animation-delay:${i*18}ms">
         <td class="td-id">#${l.deal_id}</td>
         <td class="td-sdr">${l.sdr_nome}</td>
         <td class="td-time">${l.sdr_time}</td>
