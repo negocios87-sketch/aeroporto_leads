@@ -491,21 +491,50 @@ def monitor_data():
 
 # ── ENDPOINT REUNIÕES ────────────────────────────────────────────────
 
-FOTO_BASE = "https://raw.githubusercontent.com/negocios87-sketch/fotos_time_comercial/main/"
+FOTO_BASE        = "https://raw.githubusercontent.com/negocios87-sketch/fotos_time_comercial/main/"
+FILTER_DEALS_RV  = 1466157   # Deals com Reunião Validada != Não e != No Show
+NOME_EXCLUIDO    = "Matheus Paz"  # Não conta atividades desse usuário
+TIMES_INSIDE_SALES = {"orion", "latam"}  # Podem agendar pra si mesmos
 
 def url_foto(nome):
-    """Tenta jpg, jpeg, png — retorna a primeira que existir ou None."""
-    for ext in ["jpg", "jpeg", "png", "JPG", "PNG"]:
-        url = f"{FOTO_BASE}{requests.utils.quote(nome)}.{ext}"
+    nome_enc = requests.utils.quote(nome)
+    for ext in ["jpg", "jpeg", "png", "JPG", "JPEG", "PNG", "webp"]:
+        url = f"{FOTO_BASE}{nome_enc}.{ext}"
         try:
             r = requests.head(url, timeout=5)
             if r.status_code == 200:
                 return url
         except Exception:
             pass
-    return None
+    return f"{FOTO_BASE}{nome_enc}.jpg"
 
-def buscar_reunioes():
+def buscar_deals_rv():
+    """Retorna set de deal_ids válidos + mapa deal_id -> owner_id."""
+    url  = "https://api.pipedrive.com/v1/deals"
+    ids_validos, mapa_owner = set(), {}
+    start = 0
+    while True:
+        r = requests.get(url, params={
+            "filter_id": FILTER_DEALS_RV,
+            "status": "all_not_deleted",
+            "limit": 500,
+            "start": start,
+            "api_token": API_TOKEN,
+        }, timeout=30)
+        r.raise_for_status()
+        data = r.json()
+        for d in (data.get("data") or []):
+            did = d["id"]
+            ids_validos.add(did)
+            uid = d.get("user_id")
+            mapa_owner[did] = uid.get("id") if isinstance(uid, dict) else uid
+        if not data.get("additional_data", {}).get("pagination", {}).get("more_items_in_collection"):
+            break
+        start += 500
+    return ids_validos, mapa_owner
+
+def buscar_atividades_reunioes():
+    """Busca todas as atividades do filtro FILTER_REUNIOES com retry."""
     url     = "https://api.pipedrive.com/api/v2/activities"
     headers = {"x-api-token": API_TOKEN}
     ativs, cursor = [], None
@@ -532,76 +561,95 @@ def buscar_reunioes():
 
 @app.route("/api/reunioes")
 def reunioes_data():
-    agora    = datetime.now()
-    hoje     = agora.date()
-    mes_ini  = hoje.replace(day=1)
+    agora   = datetime.now()
+    hoje    = agora.date()
+    mes_ini = hoje.replace(day=1)
     sdrs_map = get_sdrs()
 
-    atividades = buscar_reunioes()
+    # Busca em paralelo
+    atividades               = buscar_atividades_reunioes()
+    deal_ids_validos, mapa_owner = buscar_deals_rv()
 
-    # Busca usuários pra resolver owner_id do deal
+    # Mapa user_id -> nome
     users_r = requests.get("https://api.pipedrive.com/v1/users",
                            params={"api_token": API_TOKEN, "limit": 500}, timeout=15)
     users_r.raise_for_status()
     user_map = {u["id"]: u["name"] for u in (users_r.json().get("data") or [])}
 
-    # Acumuladores {nome_sdr: {hoje: int, mes: int}}
+    # ID do usuário excluído
+    excluido_id = next((uid for uid, n in user_map.items()
+                        if n.strip().lower() == NOME_EXCLUIDO.strip().lower()), None)
+
     acc: dict = {}
 
     for a in atividades:
-        tipo  = a.get("type")
-        done  = a.get("done")
-        if tipo != "meeting" or not done:
+        # Só meetings concluídas
+        if a.get("type") != "meeting":
+            continue
+        if not (a.get("done") is True or a.get("status") == "done"):
             continue
 
-        # Responsável da reunião
-        owner_id   = a.get("owner_id") or a.get("user_id")
-        owner_name = user_map.get(owner_id, "")
-        if not owner_name or owner_name not in sdrs_map:
+        act_owner_id = a.get("owner_id") or a.get("user_id")
+        act_owner_name = user_map.get(act_owner_id, "")
+
+        # Só SDRs
+        if not act_owner_name or act_owner_name not in sdrs_map:
             continue
 
-        # Proprietário do deal — não pode ser o mesmo que o responsável
-        deal_owner_id   = a.get("deal_owner_id") or (a.get("deal") or {}).get("owner_id")
+        # Exclui Matheus Paz
+        if excluido_id and act_owner_id == excluido_id:
+            continue
+
+        deal_id      = a.get("deal_id")
+        deal_owner_id = mapa_owner.get(deal_id) if deal_id else None
         deal_owner_name = user_map.get(deal_owner_id, "")
-        if deal_owner_name and deal_owner_name == owner_name:
+
+        # Time do SDR
+        sdr_time = (sdrs_map.get(act_owner_name) or {}).get("time", "").lower()
+        is_inside = sdr_time in TIMES_INSIDE_SALES
+
+        # SDR não pode ser dono do deal (exceto Inside Sales)
+        if not is_inside and deal_owner_name and deal_owner_name == act_owner_name:
+            continue
+
+        # Deal deve estar no filtro de validados
+        if deal_id and deal_id not in deal_ids_validos:
             continue
 
         # Data da atividade
-        dt_ref = None
+        dt_date = None
         for campo in ["marked_as_done_time", "due_date"]:
             val = a.get(campo)
-            if val:
-                for fmt in ("%Y-%m-%dT%H:%M:%SZ", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%d"):
-                    try:
-                        dt_ref = datetime.strptime(str(val)[:19], fmt[:len(str(val)[:19])])
-                        break
-                    except ValueError:
-                        pass
-            if dt_ref:
+            if not val:
+                continue
+            for fmt in ("%Y-%m-%dT%H:%M:%SZ", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%d"):
+                try:
+                    dt_date = datetime.strptime(str(val)[:19], fmt[:len(str(val)[:19])]).date()
+                    break
+                except ValueError:
+                    pass
+            if dt_date:
                 break
-        if dt_ref is None:
+        if not dt_date:
             continue
 
-        dt_date = dt_ref.date() if hasattr(dt_ref, 'date') else dt_ref
-
-        if owner_name not in acc:
-            acc[owner_name] = {"hoje": 0, "mes": 0}
+        if act_owner_name not in acc:
+            acc[act_owner_name] = {"hoje": 0, "mes": 0}
 
         if mes_ini <= dt_date <= hoje:
-            acc[owner_name]["mes"] += 1
+            acc[act_owner_name]["mes"] += 1
         if dt_date == hoje:
-            acc[owner_name]["hoje"] += 1
+            acc[act_owner_name]["hoje"] += 1
 
-    # Monta resultado — busca fotos em paralelo simplificado
     resultado = []
     for nome, contagens in acc.items():
         if contagens["mes"] == 0 and contagens["hoje"] == 0:
             continue
         resultado.append({
-            "nome":  nome,
-            "hoje":  contagens["hoje"],
-            "mes":   contagens["mes"],
-            "foto":  f"{FOTO_BASE}{requests.utils.quote(nome)}.jpg",
+            "nome": nome,
+            "hoje": contagens["hoje"],
+            "mes":  contagens["mes"],
+            "foto": url_foto(nome),
         })
 
     resultado.sort(key=lambda x: x["mes"], reverse=True)
@@ -1236,7 +1284,7 @@ body {
   <!-- CARROSSEL DO DIA -->
   <div class="carrossel-wrap">
     <div class="carrossel-hdr">
-      <span class="carrossel-title">Reuniões Realizadas Hoje</span>
+      <span class="carrossel-title" style="color:var(--gold);font-size:.62rem;letter-spacing:2px">Reuniões Realizadas Hoje</span>
       <span class="sec-badge" id="carr-ct">—</span>
       <div class="sec-line"></div>
       <span style="font-size:.5rem;color:var(--muted)">ordem: mais reuniões → menos · loop automático</span>
@@ -1251,7 +1299,7 @@ body {
   <!-- RANKING DO MÊS -->
   <div class="ranking-mes-wrap">
     <div class="ranking-mes-hdr">
-      <span class="ranking-mes-title">Top 3 do Mês</span>
+      <span class="ranking-mes-title" style="color:var(--gold);font-size:.62rem;letter-spacing:2px">Top 3 do Mês</span>
       <div class="sec-line"></div>
     </div>
     <div class="ranking-mes-body" id="ranking-mes-body">
@@ -1712,13 +1760,18 @@ function renderCarrossel(ranking) {
     return;
   }
 
-  const items = [...hoje, ...hoje].map(s => `
-    <div style="display:flex;flex-direction:column;align-items:center;gap:4px;flex-shrink:0;min-width:75px">
+  const items = [...hoje, ...hoje].map(s => {
+    const partes    = s.nome.trim().split(' ');
+    const primeiro  = partes[0];
+    const sobrenome = partes.length > 1 ? partes[partes.length - 1] : '';
+    return `
+    <div style="display:flex;flex-direction:column;align-items:center;gap:3px;flex-shrink:0;min-width:75px">
       ${fotoEl(s.nome, s.foto, 50)}
-      <span style="font-size:.6rem;font-weight:600;color:var(--text);max-width:72px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:center">${s.nome.split(' ')[0]}</span>
-      <span style="font-family:var(--mono);font-size:.65rem;font-weight:700;color:var(--gold)">${s.hoje}</span>
-      <span style="font-size:.5rem;color:var(--muted)">hoje</span>
-    </div>`).join('');
+      <span style="font-size:.62rem;font-weight:700;color:var(--text);max-width:72px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:center">${primeiro}</span>
+      <span style="font-size:.54rem;font-weight:400;color:#94A3B8;max-width:72px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:center">${sobrenome}</span>
+      <span style="font-family:var(--mono);font-size:.7rem;font-weight:700;color:var(--gold)">${s.hoje}</span>
+    </div>`;
+  }).join('');
 
   track.innerHTML = items;
   track.style.transform = 'translateX(0px)';
