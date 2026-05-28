@@ -23,6 +23,7 @@ from flask import Flask, jsonify
 API_TOKEN         = os.environ.get("PIPEDRIVE_TOKEN", "SEU_TOKEN_AQUI")
 FILTER_DEALS      = 1258153
 FILTER_ACTIVITIES = 1258382
+FILTER_REUNIOES   = 1668972
 UTM_FIELD         = "8fb3221ab3d91cddaf51e0a9e1bbcda34fc9d28e"
 UTM_CAMPAIGN_FIELD = "ae03fa460a108b8cdfa87e97ebca24379d2779d6"
 ULTIMA_APLIC_FIELD = "23de049432e523993f69ecd456a3f755c0f07f3d"
@@ -488,6 +489,128 @@ def monitor_data():
         "atualizado_em": agora.strftime("%d/%m/%Y %H:%M:%S"),
     })
 
+# ── ENDPOINT REUNIÕES ────────────────────────────────────────────────
+
+FOTO_BASE = "https://raw.githubusercontent.com/negocios87-sketch/fotos_time_comercial/main/"
+
+def url_foto(nome):
+    """Tenta jpg, jpeg, png — retorna a primeira que existir ou None."""
+    for ext in ["jpg", "jpeg", "png", "JPG", "PNG"]:
+        url = f"{FOTO_BASE}{requests.utils.quote(nome)}.{ext}"
+        try:
+            r = requests.head(url, timeout=5)
+            if r.status_code == 200:
+                return url
+        except Exception:
+            pass
+    return None
+
+def buscar_reunioes():
+    url     = "https://api.pipedrive.com/api/v2/activities"
+    headers = {"x-api-token": API_TOKEN}
+    ativs, cursor = [], None
+    while True:
+        params = {"filter_id": FILTER_REUNIOES, "limit": 200}
+        if cursor:
+            params["cursor"] = cursor
+        for tentativa in range(3):
+            try:
+                r = requests.get(url, params=params, headers=headers, timeout=30)
+                if r.status_code < 500:
+                    break
+            except requests.exceptions.RequestException:
+                pass
+            if tentativa < 2:
+                import time; time.sleep(2)
+        r.raise_for_status()
+        data = r.json()
+        ativs.extend(data.get("data") or [])
+        cursor = data.get("additional_data", {}).get("next_cursor")
+        if not cursor:
+            break
+    return ativs
+
+@app.route("/api/reunioes")
+def reunioes_data():
+    agora    = datetime.now()
+    hoje     = agora.date()
+    mes_ini  = hoje.replace(day=1)
+    sdrs_map = get_sdrs()
+
+    atividades = buscar_reunioes()
+
+    # Busca usuários pra resolver owner_id do deal
+    users_r = requests.get("https://api.pipedrive.com/v1/users",
+                           params={"api_token": API_TOKEN, "limit": 500}, timeout=15)
+    users_r.raise_for_status()
+    user_map = {u["id"]: u["name"] for u in (users_r.json().get("data") or [])}
+
+    # Acumuladores {nome_sdr: {hoje: int, mes: int}}
+    acc: dict = {}
+
+    for a in atividades:
+        tipo  = a.get("type")
+        done  = a.get("done")
+        if tipo != "meeting" or not done:
+            continue
+
+        # Responsável da reunião
+        owner_id   = a.get("owner_id") or a.get("user_id")
+        owner_name = user_map.get(owner_id, "")
+        if not owner_name or owner_name not in sdrs_map:
+            continue
+
+        # Proprietário do deal — não pode ser o mesmo que o responsável
+        deal_owner_id   = a.get("deal_owner_id") or (a.get("deal") or {}).get("owner_id")
+        deal_owner_name = user_map.get(deal_owner_id, "")
+        if deal_owner_name and deal_owner_name == owner_name:
+            continue
+
+        # Data da atividade
+        dt_ref = None
+        for campo in ["marked_as_done_time", "due_date"]:
+            val = a.get(campo)
+            if val:
+                for fmt in ("%Y-%m-%dT%H:%M:%SZ", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%d"):
+                    try:
+                        dt_ref = datetime.strptime(str(val)[:19], fmt[:len(str(val)[:19])])
+                        break
+                    except ValueError:
+                        pass
+            if dt_ref:
+                break
+        if dt_ref is None:
+            continue
+
+        dt_date = dt_ref.date() if hasattr(dt_ref, 'date') else dt_ref
+
+        if owner_name not in acc:
+            acc[owner_name] = {"hoje": 0, "mes": 0}
+
+        if mes_ini <= dt_date <= hoje:
+            acc[owner_name]["mes"] += 1
+        if dt_date == hoje:
+            acc[owner_name]["hoje"] += 1
+
+    # Monta resultado — busca fotos em paralelo simplificado
+    resultado = []
+    for nome, contagens in acc.items():
+        if contagens["mes"] == 0 and contagens["hoje"] == 0:
+            continue
+        resultado.append({
+            "nome":  nome,
+            "hoje":  contagens["hoje"],
+            "mes":   contagens["mes"],
+            "foto":  f"{FOTO_BASE}{requests.utils.quote(nome)}.jpg",
+        })
+
+    resultado.sort(key=lambda x: x["mes"], reverse=True)
+
+    return jsonify({
+        "ranking":       resultado,
+        "atualizado_em": agora.strftime("%d/%m/%Y %H:%M:%S"),
+    })
+
 # ── FRONTEND ─────────────────────────────────────────────────────────
 
 HTML = r"""<!DOCTYPE html>
@@ -819,7 +942,206 @@ body {
 }
 .footer-clock { font-family:var(--mono); color:var(--gold); font-size:.7rem; letter-spacing:2px; }
 
-/* ── EMPTY ── */
+/* ── SEÇÃO REUNIÕES ── */
+.section-reunioes {
+  flex-shrink: 0;
+  height: 160px;
+  background: #080E1A;
+  border-top: 1px solid var(--border);
+  display: flex;
+  overflow: hidden;
+}
+
+/* CARROSSEL */
+.carrossel-wrap {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border-right: 1px solid var(--border);
+}
+.carrossel-hdr {
+  flex-shrink: 0;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  padding: 0 16px;
+  gap: 8px;
+  border-bottom: 1px solid var(--border);
+}
+.carrossel-title {
+  font-family: var(--mono);
+  font-size: .52rem;
+  font-weight: 700;
+  color: var(--goldd);
+  letter-spacing: 3px;
+  text-transform: uppercase;
+}
+.carrossel-track-wrap {
+  flex: 1;
+  overflow: hidden;
+  position: relative;
+}
+.carrossel-track {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  padding: 0 20px;
+  height: 100%;
+  will-change: transform;
+}
+.carrossel-item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 5px;
+  flex-shrink: 0;
+  min-width: 70px;
+}
+.c-foto {
+  width: 52px;
+  height: 52px;
+  border-radius: 50%;
+  object-fit: cover;
+  border: 2px solid var(--border);
+  background: var(--surface);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--mono);
+  font-size: .75rem;
+  font-weight: 700;
+  color: var(--gold);
+  overflow: hidden;
+  flex-shrink: 0;
+}
+.c-foto img { width:100%; height:100%; object-fit:cover; border-radius:50%; }
+.c-nome {
+  font-size: .6rem;
+  font-weight: 600;
+  color: var(--text);
+  text-align: center;
+  max-width: 70px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.c-vol {
+  font-family: var(--mono);
+  font-size: .65rem;
+  font-weight: 700;
+  color: var(--gold);
+}
+.c-sub {
+  font-size: .52rem;
+  color: var(--muted);
+  letter-spacing: .5px;
+}
+
+/* RANKING MÊS */
+.ranking-mes-wrap {
+  flex-shrink: 0;
+  width: 320px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.ranking-mes-hdr {
+  flex-shrink: 0;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  padding: 0 16px;
+  gap: 8px;
+  border-bottom: 1px solid var(--border);
+}
+.ranking-mes-title {
+  font-family: var(--mono);
+  font-size: .52rem;
+  font-weight: 700;
+  color: var(--goldd);
+  letter-spacing: 3px;
+  text-transform: uppercase;
+}
+.ranking-mes-body {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  padding: 0 16px;
+}
+.podio-item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 5px;
+}
+.podio-foto {
+  position: relative;
+  width: 56px;
+  height: 56px;
+  flex-shrink: 0;
+}
+.podio-foto img {
+  width: 100%;
+  height: 100%;
+  border-radius: 50%;
+  object-fit: cover;
+}
+.podio-foto .podio-placeholder {
+  width: 100%;
+  height: 100%;
+  border-radius: 50%;
+  background: var(--surface);
+  border: 2px solid var(--border);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--mono);
+  font-size: .72rem;
+  font-weight: 700;
+  color: var(--gold);
+}
+.podio-medal {
+  position: absolute;
+  bottom: -2px;
+  right: -2px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: .65rem;
+  font-weight: 700;
+  border: 1px solid var(--bg);
+}
+.medal-1 { background: #C9A84C; color: #000; }
+.medal-2 { background: #94A3B8; color: #000; }
+.medal-3 { background: #92400E; color: #fff; }
+.podio-nome {
+  font-size: .6rem;
+  font-weight: 700;
+  color: var(--text);
+  text-align: center;
+  max-width: 72px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.podio-vol {
+  font-family: var(--mono);
+  font-size: .72rem;
+  font-weight: 700;
+}
+.podio-vol.p1 { color: #C9A84C; }
+.podio-vol.p2 { color: #94A3B8; }
+.podio-vol.p3 { color: #B45309; }
+.podio-sub {
+  font-size: .5rem;
+  color: var(--muted);
+}
 .empty { display:flex; flex-direction:column; align-items:center; justify-content:center; padding:40px 0; gap:8px; color:var(--muted); }
 .empty-icon { font-size:2rem; }
 .empty-txt  { font-family:var(--mono); font-size:.65rem; letter-spacing:3px; text-transform:uppercase; }
@@ -902,6 +1224,37 @@ body {
       <div class="sec-line"></div>
     </div>
     <div class="sdrs-scroll" id="sdrs-wrap">
+      <div class="empty"><span class="empty-txt">—</span></div>
+    </div>
+  </div>
+
+</div>
+
+<!-- ══ REUNIÕES ══ -->
+<div class="section-reunioes">
+
+  <!-- CARROSSEL DO DIA -->
+  <div class="carrossel-wrap">
+    <div class="carrossel-hdr">
+      <span class="carrossel-title">Reuniões Realizadas Hoje</span>
+      <span class="sec-badge" id="carr-ct">—</span>
+      <div class="sec-line"></div>
+      <span style="font-size:.5rem;color:var(--muted)">ordem: mais reuniões → menos · loop automático</span>
+    </div>
+    <div class="carrossel-track-wrap">
+      <div class="carrossel-track" id="carrossel-track">
+        <div class="empty"><span class="empty-txt">Carregando</span></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- RANKING DO MÊS -->
+  <div class="ranking-mes-wrap">
+    <div class="ranking-mes-hdr">
+      <span class="ranking-mes-title">Top 3 do Mês</span>
+      <div class="sec-line"></div>
+    </div>
+    <div class="ranking-mes-body" id="ranking-mes-body">
       <div class="empty"><span class="empty-txt">—</span></div>
     </div>
   </div>
@@ -1326,6 +1679,108 @@ function aplicarFiltro() {
 
 fetchDados();
 setInterval(fetchDados, REFRESH * 1000);
+
+// ── REUNIÕES — CARROSSEL E RANKING ──────────────────────────────────
+let carrosselTimer = null;
+let carrosselPos   = 0;
+
+function initials(nome) {
+  const p = nome.trim().split(' ');
+  return p.length >= 2 ? (p[0][0] + p[p.length-1][0]).toUpperCase() : nome.slice(0,2).toUpperCase();
+}
+
+function fotoEl(nome, foto, size) {
+  return `<div style="width:${size}px;height:${size}px;border-radius:50%;overflow:hidden;
+    background:var(--surface);border:2px solid var(--border);flex-shrink:0;
+    display:flex;align-items:center;justify-content:center;
+    font-family:var(--mono);font-size:.72rem;font-weight:700;color:var(--gold)">
+    <img src="${foto}" alt="${nome}"
+      style="width:100%;height:100%;object-fit:cover;display:block"
+      onerror="this.parentNode.innerHTML='${initials(nome).replace(/'/g,"\\'")}'" />
+  </div>`;
+}
+
+function renderCarrossel(ranking) {
+  const track = document.getElementById('carrossel-track');
+  const ct    = document.getElementById('carr-ct');
+  const hoje  = ranking.filter(s => s.hoje > 0).sort((a,b) => b.hoje - a.hoje);
+  ct.textContent = hoje.reduce((s,r) => s + r.hoje, 0) + ' reuniões';
+
+  if (hoje.length === 0) {
+    track.innerHTML = '<div style="padding:0 20px;display:flex;align-items:center;height:100%"><span style="font-family:var(--mono);font-size:.65rem;letter-spacing:3px;text-transform:uppercase;color:var(--muted)">Nenhuma reunião hoje</span></div>';
+    clearInterval(carrosselTimer);
+    return;
+  }
+
+  const items = [...hoje, ...hoje].map(s => `
+    <div style="display:flex;flex-direction:column;align-items:center;gap:4px;flex-shrink:0;min-width:75px">
+      ${fotoEl(s.nome, s.foto, 50)}
+      <span style="font-size:.6rem;font-weight:600;color:var(--text);max-width:72px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:center">${s.nome.split(' ')[0]}</span>
+      <span style="font-family:var(--mono);font-size:.65rem;font-weight:700;color:var(--gold)">${s.hoje}</span>
+      <span style="font-size:.5rem;color:var(--muted)">hoje</span>
+    </div>`).join('');
+
+  track.innerHTML = items;
+  track.style.transform = 'translateX(0px)';
+  carrosselPos = 0;
+  clearInterval(carrosselTimer);
+
+  const itemW  = 95;
+  const totalW = hoje.length * itemW;
+  carrosselTimer = setInterval(() => {
+    carrosselPos += 0.5;
+    if (carrosselPos >= totalW) carrosselPos = 0;
+    track.style.transform = `translateX(-${carrosselPos}px)`;
+  }, 20);
+}
+
+function renderRankingMes(ranking) {
+  const body = document.getElementById('ranking-mes-body');
+  const top3 = ranking.filter(s => s.mes > 0).slice(0, 3);
+
+  if (top3.length === 0) {
+    body.innerHTML = '<span style="font-family:var(--mono);font-size:.65rem;color:var(--muted)">Sem dados</span>';
+    return;
+  }
+
+  const medalBg  = ['#C9A84C','#94A3B8','#92400E'];
+  const medalClr = ['#000','#000','#fff'];
+  const volClr   = ['#C9A84C','#94A3B8','#B45309'];
+
+  // Pódio: 2º | 1º | 3º
+  const ordemIdx = top3.length >= 3 ? [1,0,2] : top3.length === 2 ? [1,0] : [0];
+  const ordem    = ordemIdx.map(i => ({ ...top3[i], orig: i }));
+
+  body.innerHTML = ordem.map(s => `
+    <div style="display:flex;flex-direction:column;align-items:center;gap:4px">
+      <div style="position:relative">
+        ${fotoEl(s.nome, s.foto, 54)}
+        <span style="position:absolute;bottom:-2px;right:-2px;width:17px;height:17px;border-radius:50%;
+          background:${medalBg[s.orig]};color:${medalClr[s.orig]};
+          display:flex;align-items:center;justify-content:center;
+          font-size:.6rem;font-weight:700;border:1px solid var(--bg)">${s.orig+1}</span>
+      </div>
+      <span style="font-size:.6rem;font-weight:700;color:var(--text);max-width:72px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:center">${s.nome.split(' ')[0]}</span>
+      <span style="font-family:var(--mono);font-size:.7rem;font-weight:700;color:${volClr[s.orig]}">${s.mes}</span>
+      <span style="font-size:.5rem;color:var(--muted)">no mês</span>
+    </div>`).join('');
+}
+
+async function fetchReunioes() {
+  if (!dentroDoHorario()) return;
+  try {
+    const r = await fetch('/api/reunioes');
+    if (!r.ok) return;
+    const data = await r.json();
+    renderCarrossel(data.ranking || []);
+    renderRankingMes(data.ranking || []);
+  } catch(err) {
+    console.error('Erro reunioes:', err);
+  }
+}
+
+fetchReunioes();
+setInterval(fetchReunioes, REFRESH * 1000);
 </script>
 </body>
 </html>"""
