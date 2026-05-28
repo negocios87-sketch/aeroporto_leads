@@ -1284,7 +1284,7 @@ body {
   <!-- CARROSSEL DO DIA -->
   <div class="carrossel-wrap">
     <div class="carrossel-hdr">
-      <span class="carrossel-title" style="color:var(--gold);font-size:.62rem;letter-spacing:2px">Reuniões Realizadas Hoje</span>
+      <span class="carrossel-title" style="color:var(--gold);font-size:.62rem;letter-spacing:2px">Reuniões Realizadas <span style="color:#FFD700;font-size:.85rem;font-weight:700;letter-spacing:1px">HOJE</span></span>
       <span class="sec-badge" id="carr-ct">—</span>
       <div class="sec-line"></div>
       <span style="font-size:.5rem;color:var(--muted)">ordem: mais reuniões → menos · loop automático</span>
@@ -1798,23 +1798,31 @@ function renderRankingMes(ranking) {
 
   const medalBg  = ['#C9A84C','#94A3B8','#92400E'];
   const medalClr = ['#000','#000','#fff'];
-  const volClr   = ['#C9A84C','#94A3B8','#B45309'];
+  const volClr   = ['#FFD700','#C0C0C0','#CD7F32'];
+  const bordaClr = ['#FFD700','#C0C0C0','#CD7F32'];
 
   // Pódio: 2º | 1º | 3º
   const ordemIdx = top3.length >= 3 ? [1,0,2] : top3.length === 2 ? [1,0] : [0];
   const ordem    = ordemIdx.map(i => ({ ...top3[i], orig: i }));
 
   body.innerHTML = ordem.map(s => `
-    <div style="display:flex;flex-direction:column;align-items:center;gap:4px">
+    <div style="display:flex;flex-direction:column;align-items:center;gap:5px">
       <div style="position:relative">
-        ${fotoEl(s.nome, s.foto, 54)}
-        <span style="position:absolute;bottom:-2px;right:-2px;width:17px;height:17px;border-radius:50%;
+        <div style="width:66px;height:66px;border-radius:50%;overflow:hidden;
+          border:3px solid ${bordaClr[s.orig]};
+          box-shadow:0 0 14px ${bordaClr[s.orig]}66;
+          flex-shrink:0">
+          <img src="${s.foto}" alt="${s.nome}"
+            style="width:100%;height:100%;object-fit:cover;display:block"
+            onerror="this.style.display='none';this.parentNode.style.background='var(--surface)';this.parentNode.style.display='flex';this.parentNode.style.alignItems='center';this.parentNode.style.justifyContent='center';this.parentNode.innerHTML='<span style=\'font-family:var(--mono);font-size:.8rem;font-weight:700;color:var(--gold)\'>${initials(s.nome)}</span>'" />
+        </div>
+        <span style="position:absolute;bottom:-3px;right:-3px;width:20px;height:20px;border-radius:50%;
           background:${medalBg[s.orig]};color:${medalClr[s.orig]};
           display:flex;align-items:center;justify-content:center;
-          font-size:.6rem;font-weight:700;border:1px solid var(--bg)">${s.orig+1}</span>
+          font-size:.62rem;font-weight:700;border:2px solid var(--bg)">${s.orig+1}</span>
       </div>
-      <span style="font-size:.6rem;font-weight:700;color:var(--text);max-width:72px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:center">${s.nome.split(' ')[0]}</span>
-      <span style="font-family:var(--mono);font-size:.7rem;font-weight:700;color:${volClr[s.orig]}">${s.mes}</span>
+      <span style="font-size:.62rem;font-weight:700;color:var(--text);max-width:76px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:center">${s.nome.split(' ')[0]}</span>
+      <span style="font-family:var(--mono);font-size:.76rem;font-weight:700;color:${volClr[s.orig]}">${s.mes}</span>
       <span style="font-size:.5rem;color:var(--muted)">no mês</span>
     </div>`).join('');
 }
